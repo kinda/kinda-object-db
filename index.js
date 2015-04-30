@@ -73,7 +73,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   this.getItem = function *(klass, key, options) {
     this.checkClass(klass);
     var item = yield this.database.getItem(TABLE_NAME, key, options);
-    if (!item) return; // means item is not found and errorIfMissing is true
+    if (!item) return; // means item is not found and errorIfMissing is false
     var classes = item._classes;
     if (classes.indexOf(klass) === -1) {
       throw new Error('found an item with the specified key but not belonging to the specified class');
@@ -101,7 +101,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     this.checkClass(klass);
     yield this.transaction(function *(tr) {
       var item = yield tr.database.getItem(TABLE_NAME, key, options);
-      if (!item) return; // means item is not found and errorIfMissing is true
+      if (!item) return; // means item is not found and errorIfMissing is false
       if (item._classes.indexOf(klass) === -1) {
         throw new Error('found an item with the specified key but not belonging to the specified class');
       }
