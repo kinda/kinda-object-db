@@ -2,8 +2,10 @@
 
 var _ = require('lodash');
 var KindaObject = require('kinda-object');
+var log = require('kinda-log').create();
 var KindaDB = require('kinda-db');
 
+var VERSION = 1;
 var TABLE_NAME = 'Objects';
 
 var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
@@ -37,10 +39,80 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
       }, this);
       return { name: name, indexes: indexes };
     }, this);
+
     this.database = KindaDB.create(name, url, [table], options);
+
+    this.database.onAsync('didCreate', this.createDatabase.bind(this))
+
+    this.database.onAsync('didInitialize', this.initializeDatabase.bind(this))
+
+    this.database.on('upgradeDidStart', function() {
+      this.emit('upgradeDidStart');
+    }.bind(this))
+
+    this.database.on('upgradeDidStop', function() {
+      this.emit('upgradeDidStop');
+    }.bind(this))
+
+    this.database.on('migrationDidStart', function() {
+      this.emit('migrationDidStart');
+    }.bind(this))
+
+    this.database.on('migrationDidStop', function() {
+      this.emit('migrationDidStop');
+    }.bind(this))
   });
 
   // === Database ====
+
+  this.initializeDatabase = function *() {
+    yield this.database.lockDatabase();
+    try {
+      yield this.upgradeDatabase();
+    } finally {
+      yield this.database.unlockDatabase();
+    }
+    yield this.emitAsync('didInitialize');
+  };
+
+  this.createDatabase = function *(tr) {
+    var state = yield this.database.loadDatabaseState(tr);
+    state.objectDB = { version: VERSION };
+    yield this.database.saveDatabaseState(tr, state);
+    yield this.emitAsync('didCreate', tr);
+  };
+
+  this.upgradeDatabase = function *() {
+    var state = yield this.database.loadDatabaseState();
+    var version = (state.objectDB && state.objectDB.version) || 0;
+
+    if (version === VERSION) return;
+
+    if (version > VERSION) {
+      throw new Error('cannot downgrade the object database');
+    }
+
+    this.emit('upgradeDidStart');
+
+    if (version < 1) { // Upgrade from KindaDB to KindaObjectDB
+      state.objectDB = {};
+      var tableNames = _.pluck(state.tables, 'name');
+      for (var i = 0; i < tableNames.length; i++) {
+        var tableName = tableNames[i];
+        if (tableName === TABLE_NAME) continue;
+        yield this.database._removeTable(tableName);
+        var table = _.find(state.tables, 'name', tableName);
+        _.pull(state.tables, table);
+        log.info("Table '" + tableName + "' (database '" + this.name + "') permanently removed");
+      }
+    }
+
+    state.objectDB.version = VERSION;
+    yield this.database.saveDatabaseState(undefined, state);
+    log.info("Object database '" + this.name + "' upgraded to version " + VERSION);
+
+    this.emit('upgradeDidStop');
+  };
 
   this.transaction = function *(fn, options) {
     if (this.isInsideTransaction()) return yield fn(this);
