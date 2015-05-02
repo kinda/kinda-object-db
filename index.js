@@ -35,6 +35,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
         if (!_.isArray(properties)) properties = [properties];
         properties.unshift(fn);
         index.properties = properties;
+        if (index.projection) index.projection.push('_classes');
         table.indexes.push(index);
       }, this);
       return { name: name, indexes: indexes };
