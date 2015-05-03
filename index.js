@@ -43,10 +43,6 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
 
     this.database = KindaDB.create(name, url, [table], options);
 
-    this.database.onAsync('didCreate', this.createDatabase.bind(this))
-
-    this.database.onAsync('didInitialize', this.initializeDatabase.bind(this))
-
     this.database.on('upgradeDidStart', function() {
       this.emit('upgradeDidStart');
     }.bind(this))
@@ -66,26 +62,69 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
 
   // === Database ====
 
-  this.initializeDatabase = function *() {
-    yield this.database.lockDatabase();
-    try {
-      yield this.upgradeDatabase();
-    } finally {
-      yield this.database.unlockDatabase();
+  this.initializeObjectDatabase = function *() {
+    if (this.hasBeenInitialized) return;
+    if (this.isInitializing) return;
+    if (this.isInsideTransaction()) {
+      throw new Error('cannot initialize the object database inside a transaction');
     }
-    yield this.emitAsync('didInitialize');
+    this.isInitializing = true;
+    try {
+      yield this.database.initializeDatabase();
+      var hasBeenCreated = yield this.createObjectDatabaseIfDoesNotExist();
+      if (hasBeenCreated) {
+        // in case of upgrade from KindaDB to KindaObjectDB:
+        yield this.database.removeTablesMarkedAsRemoved();
+      } else {
+        yield this.database.lockDatabase();
+        try {
+          yield this.upgradeObjectDatabase();
+        } finally {
+          yield this.database.unlockDatabase();
+        }
+      }
+      this.hasBeenInitialized = true;
+      yield this.emitAsync('didInitialize');
+    } finally {
+      this.isInitializing = false;
+    }
   };
 
-  this.createDatabase = function *(tr) {
-    var state = yield this.database.loadDatabaseState(tr);
-    state.objectDB = { version: VERSION };
-    yield this.database.saveDatabaseState(tr, state);
-    yield this.emitAsync('didCreate', tr);
+  this.loadObjectDatabaseRecord = function *(tr, errorIfMissing) {
+    if (!tr) tr = this.database.store;
+    if (errorIfMissing == null) errorIfMissing = true;
+    return yield tr.get([this.name, '$ObjectDatabase'], { errorIfMissing: errorIfMissing });
   };
 
-  this.upgradeDatabase = function *() {
-    var state = yield this.database.loadDatabaseState();
-    var version = (state.objectDB && state.objectDB.version) || 0;
+  this.saveObjectDatabaseRecord = function *(tr, record, errorIfExists) {
+    if (!tr) tr = this.database.store;
+    yield tr.put([this.name, '$ObjectDatabase'], record, {
+      errorIfExists: errorIfExists,
+      createIfMissing: !errorIfExists
+    });
+  };
+
+  this.createObjectDatabaseIfDoesNotExist = function *(tr) {
+    var hasBeenCreated = false;
+    yield this.database.store.transaction(function *(tr) {
+      var record = yield this.loadObjectDatabaseRecord(tr, false);
+      if (!record) {
+        record = {
+          name: this.name,
+          version: VERSION
+        };
+        yield this.saveObjectDatabaseRecord(tr, record, true);
+        hasBeenCreated = true;
+        yield this.emitAsync('didCreate');
+        log.info("Object database '" + this.name + "' created");
+      }
+    }.bind(this));
+    return hasBeenCreated;
+  };
+
+  this.upgradeObjectDatabase = function *() {
+    var record = yield this.loadObjectDatabaseRecord();
+    var version = record.version;
 
     if (version === VERSION) return;
 
@@ -95,21 +134,12 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
 
     this.emit('upgradeDidStart');
 
-    if (version < 1) { // Upgrade from KindaDB to KindaObjectDB
-      state.objectDB = {};
-      var tableNames = _.pluck(state.tables, 'name');
-      for (var i = 0; i < tableNames.length; i++) {
-        var tableName = tableNames[i];
-        if (tableName === TABLE_NAME) continue;
-        yield this.database._removeTable(tableName);
-        var table = _.find(state.tables, 'name', tableName);
-        _.pull(state.tables, table);
-        log.info("Table '" + tableName + "' (database '" + this.name + "') permanently removed");
-      }
+    if (version < 2) {
+      // ...
     }
 
-    state.objectDB.version = VERSION;
-    yield this.database.saveDatabaseState(undefined, state);
+    record.version = VERSION;
+    yield this.saveObjectDatabaseRecord(undefined, record);
     log.info("Object database '" + this.name + "' upgraded to version " + VERSION);
 
     this.emit('upgradeDidStop');
@@ -117,6 +147,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
 
   this.transaction = function *(fn, options) {
     if (this.isInsideTransaction()) return yield fn(this);
+    yield this.initializeObjectDatabase();
     return yield this.database.transaction(function *(tr) {
       var transaction = Object.create(this);
       transaction.database = tr;
@@ -128,11 +159,11 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     return this !== this.self;
   };
 
-  this.destroyDatabase = function *() {
+  this.destroyObjectDatabase = function *() {
     yield this.database.destroyDatabase();
   };
 
-  this.close = function *() {
+  this.closeObjectDatabase = function *() {
     yield this.database.close();
   };
 
@@ -145,6 +176,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //     the requested properties, the projection is used. Default: '*'.
   this.getItem = function *(klass, key, options) {
     this.checkClass(klass);
+    yield this.initializeObjectDatabase();
     var item = yield this.database.getItem(TABLE_NAME, key, options);
     if (!item) return; // means item is not found and errorIfMissing is false
     var classes = item._classes;
@@ -165,6 +197,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     if (!classes.length) throw new Error('classes parameter is empty');
     item = _.clone(item);
     item._classes = classes;
+    yield this.initializeObjectDatabase();
     yield this.database.putItem(TABLE_NAME, key, item, options);
   };
 
@@ -187,6 +220,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //     an array of property name. Default: '*'. TODO
   this.getItems = function *(klass, keys, options) {
     this.checkClass(klass);
+    yield this.initializeObjectDatabase();
     var items = yield this.database.getItems(TABLE_NAME, keys, options);
     items = items.map(function(item) {
       var classes = item.value._classes;
@@ -213,6 +247,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //   limit: maximum number of items to return.
   this.findItems = function *(klass, options) {
     options = this.injectClassInQueryOption(klass, options);
+    yield this.initializeObjectDatabase();
     var items = yield this.database.findItems(TABLE_NAME, options);
     items = items.map(function(item) {
       var classes = item.value._classes;
@@ -226,6 +261,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   // Options: same as findItems() without 'reverse' and 'properties' attributes.
   this.countItems = function *(klass, options) {
     options = this.injectClassInQueryOption(klass, options);
+    yield this.initializeObjectDatabase();
     return yield this.database.countItems(TABLE_NAME, options);
   };
 
@@ -236,6 +272,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //     Default: 250.
   this.forEachItems = function *(klass, options, fn, thisArg) {
     options = this.injectClassInQueryOption(klass, options);
+    yield this.initializeObjectDatabase();
     yield this.database.forEachItems(TABLE_NAME, options, function *(value, key) {
       var classes = value._classes;
       var value = _.omit(value, '_classes');
@@ -246,6 +283,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   // Options: same as forEachItems() without 'properties' attribute.
   this.findAndDeleteItems = function *(klass, options) {
     options = this.injectClassInQueryOption(klass, options);
+    yield this.initializeObjectDatabase();
     yield this.database.findAndDeleteItems(TABLE_NAME, options);
   };
 

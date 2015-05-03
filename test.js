@@ -36,7 +36,7 @@ suite('KindaObjectDB', function() {
   });
 
   suiteTeardown(function *() {
-    yield db.destroyDatabase();
+    yield db.destroyObjectDatabase();
   });
 
   test('put, get and delete an item', function *() {
