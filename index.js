@@ -60,6 +60,10 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     }.bind(this))
   });
 
+  this.getStore = function() {
+    return this.database.getStore();
+  };
+
   // === Database ====
 
   this.initializeObjectDatabase = function *() {
@@ -91,13 +95,13 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   };
 
   this.loadObjectDatabaseRecord = function *(tr, errorIfMissing) {
-    if (!tr) tr = this.database.store;
+    if (!tr) tr = this.getStore();
     if (errorIfMissing == null) errorIfMissing = true;
     return yield tr.get([this.name, '$ObjectDatabase'], { errorIfMissing: errorIfMissing });
   };
 
   this.saveObjectDatabaseRecord = function *(tr, record, errorIfExists) {
-    if (!tr) tr = this.database.store;
+    if (!tr) tr = this.getStore();
     yield tr.put([this.name, '$ObjectDatabase'], record, {
       errorIfExists: errorIfExists,
       createIfMissing: !errorIfExists
@@ -106,7 +110,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
 
   this.createObjectDatabaseIfDoesNotExist = function *(tr) {
     var hasBeenCreated = false;
-    yield this.database.store.transaction(function *(tr) {
+    yield this.getStore().transaction(function *(tr) {
       var record = yield this.loadObjectDatabaseRecord(tr, false);
       if (!record) {
         record = {
