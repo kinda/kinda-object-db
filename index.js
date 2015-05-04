@@ -100,7 +100,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     return yield tr.get([this.name, '$ObjectDatabase'], { errorIfMissing: errorIfMissing });
   };
 
-  this.saveObjectDatabaseRecord = function *(tr, record, errorIfExists) {
+  this.saveObjectDatabaseRecord = function *(record, tr, errorIfExists) {
     if (!tr) tr = this.getStore();
     yield tr.put([this.name, '$ObjectDatabase'], record, {
       errorIfExists: errorIfExists,
@@ -117,7 +117,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
           name: this.name,
           version: VERSION
         };
-        yield this.saveObjectDatabaseRecord(tr, record, true);
+        yield this.saveObjectDatabaseRecord(record, tr, true);
         hasBeenCreated = true;
         yield this.emitAsync('didCreate');
         log.info("Object database '" + this.name + "' created");
@@ -143,7 +143,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     }
 
     record.version = VERSION;
-    yield this.saveObjectDatabaseRecord(undefined, record);
+    yield this.saveObjectDatabaseRecord(record);
     log.info("Object database '" + this.name + "' upgraded to version " + VERSION);
 
     this.emit('upgradeDidStop');
