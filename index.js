@@ -209,14 +209,16 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //   errorIfMissing: throw an error if the item is not found. Default: true.
   this.deleteItem = function *(klass, key, options) {
     this.checkClass(klass);
+    var hasBeenDeleted = false;
     yield this.transaction(function *(tr) {
       var item = yield tr.database.getItem(TABLE_NAME, key, options);
-      if (!item) return; // means item is not found and errorIfMissing is false
+      if (!item) return; // means item not found and errorIfMissing false
       if (item._classes.indexOf(klass) === -1) {
         throw new Error('found an item with the specified key but not belonging to the specified class');
       }
-      yield tr.database.deleteItem(TABLE_NAME, key);
+      hasBeenDeleted = yield tr.database.deleteItem(TABLE_NAME, key);
     });
+    return hasBeenDeleted;
   };
 
   // Options:
@@ -288,7 +290,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   this.findAndDeleteItems = function *(klass, options) {
     options = this.injectClassInQueryOption(klass, options);
     yield this.initializeObjectDatabase();
-    yield this.database.findAndDeleteItems(TABLE_NAME, options);
+    return yield this.database.findAndDeleteItems(TABLE_NAME, options);
   };
 
   // === Helpers ====

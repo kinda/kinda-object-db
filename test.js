@@ -63,9 +63,12 @@ suite('KindaObjectDB', function() {
     });
     assert.instanceOf(err, Error);
 
-    yield db.deleteItem('Person', key);
+    var hasBeenDeleted = yield db.deleteItem('Person', key);
+    assert.isTrue(hasBeenDeleted);
     var item = yield db.getItem('Person', key, { errorIfMissing: false });
     assert.isUndefined(item);
+    hasBeenDeleted = yield db.deleteItem('Person', key, { errorIfMissing: false });
+    assert.isFalse(hasBeenDeleted);
   });
 
   suite('with several items', function() {
@@ -189,10 +192,13 @@ suite('KindaObjectDB', function() {
 
     test('find and delete items', function *() {
       var options = { query: { country: 'France' }, batchSize: 2 };
-      yield db.findAndDeleteItems('Account', options);
+      var deletedItemsCount = yield db.findAndDeleteItems('Account', options);
+      assert.strictEqual(deletedItemsCount, 3);
       var items = yield db.findItems('Account');
       var keys = _.pluck(items, 'key');
       assert.deepEqual(keys, ['bbb', 'ccc', 'ddd']);
+      deletedItemsCount = yield db.findAndDeleteItems('Account', options);
+      assert.strictEqual(deletedItemsCount, 0);
     });
 
     test('change an item inside a transaction', function *() {
