@@ -165,6 +165,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
 
   this.destroyObjectDatabase = function *() {
     yield this.database.destroyDatabase();
+    this.hasBeenInitialized = false;
   };
 
   this.closeObjectDatabase = function *() {
