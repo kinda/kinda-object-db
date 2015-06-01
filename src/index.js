@@ -1,68 +1,72 @@
-"use strict";
+'use strict';
 
-var _ = require('lodash');
-var KindaObject = require('kinda-object');
-var log = require('kinda-log').create();
-var KindaDB = require('kinda-db');
+let _ = require('lodash');
+let KindaObject = require('kinda-object');
+let KindaEventManager = require('kinda-event-manager');
+let KindaLog = require('kinda-log');
+let KindaDB = require('kinda-db');
 
-var VERSION = 1;
-var TABLE_NAME = 'Objects';
+const VERSION = 1;
+const TABLE_NAME = 'Objects';
 
-var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
-  this.setCreator(function(name, url, classes, options) {
-    if (!name) throw new Error('name is missing');
-    if (!url) throw new Error('url is missing');
-    if (!classes) classes = [];
-    if (!options) options = {};
-    this.name = name;
-    this.self = this;
-    var table = {
+let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
+  this.include(KindaEventManager);
+
+  this.creator = function(options = {}) {
+    if (!options.name) throw new Error('name is missing');
+    if (!options.url) throw new Error('url is missing');
+
+    let log = options.log;
+    if (!KindaLog.isClassOf(log)) log = KindaLog.create(log);
+    this.log = log;
+
+    this.name = options.name;
+
+    let table = {
       name: TABLE_NAME,
       indexes: []
     };
-    classes.forEach(function(klass) {
+
+    (options.classes || []).forEach(klass => {
       if (_.isString(klass)) klass = { name: klass };
-      var name = klass.name;
-      var fn = function(item) {
+      let name = klass.name;
+      let fn = function(item) {
         return item._classes && item._classes.indexOf(name) !== -1 ? true : undefined;
       };
       fn.displayName = this.makeIndexName(name);
-      var indexes = _.cloneDeep(klass.indexes) || [];
+      let indexes = _.cloneDeep(klass.indexes) || [];
       indexes.unshift([]); // Trick to add an index for the class itself
-      indexes.forEach(function(index) {
+      indexes.forEach(index => {
         if (!_.isPlainObject(index)) index = { properties: index };
-        var properties = index.properties;
+        let properties = index.properties;
         if (!_.isArray(properties)) properties = [properties];
         properties.unshift(fn);
         index.properties = properties;
         if (index.projection) index.projection.push('_classes');
         table.indexes.push(index);
-      }, this);
-      return { name: name, indexes: indexes };
-    }, this);
+      });
+    });
 
-    this.database = KindaDB.create(name, url, [table], options);
+    this.database = KindaDB.create({
+      name: options.name,
+      url: options.url,
+      tables: [table],
+      log
+    });
 
-    this.database.on('upgradeDidStart', function() {
-      this.emit('upgradeDidStart');
-    }.bind(this))
+    this.objectDatabase = this;
 
-    this.database.on('upgradeDidStop', function() {
-      this.emit('upgradeDidStop');
-    }.bind(this))
-
-    this.database.on('migrationDidStart', function() {
-      this.emit('migrationDidStart');
-    }.bind(this))
-
-    this.database.on('migrationDidStop', function() {
-      this.emit('migrationDidStop');
-    }.bind(this))
-  });
-
-  this.getStore = function() {
-    return this.database.getStore();
+    this.database.on('upgradeDidStart', () => this.emit('upgradeDidStart'));
+    this.database.on('upgradeDidStop', () => this.emit('upgradeDidStop'));
+    this.database.on('migrationDidStart', () => this.emit('migrationDidStart'));
+    this.database.on('migrationDidStop', () => this.emit('migrationDidStop'));
   };
+
+  Object.defineProperty(this, 'store', {
+    get() {
+      return this.database.store;
+    }
+  });
 
   // === Database ====
 
@@ -75,7 +79,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     this.isInitializing = true;
     try {
       yield this.database.initializeDatabase();
-      var hasBeenCreated = yield this.createObjectDatabaseIfDoesNotExist();
+      let hasBeenCreated = yield this.createObjectDatabaseIfDoesNotExist();
       if (hasBeenCreated) {
         // in case of upgrade from KindaDB to KindaObjectDB:
         yield this.database.removeTablesMarkedAsRemoved();
@@ -94,24 +98,21 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     }
   };
 
-  this.loadObjectDatabaseRecord = function *(tr, errorIfMissing) {
-    if (!tr) tr = this.getStore();
-    if (errorIfMissing == null) errorIfMissing = true;
-    return yield tr.get([this.name, '$ObjectDatabase'], { errorIfMissing: errorIfMissing });
+  this.loadObjectDatabaseRecord = function *(tr = this.store, errorIfMissing = true) {
+    return yield tr.get([this.name, '$ObjectDatabase'], { errorIfMissing });
   };
 
-  this.saveObjectDatabaseRecord = function *(record, tr, errorIfExists) {
-    if (!tr) tr = this.getStore();
+  this.saveObjectDatabaseRecord = function *(record, tr = this.store, errorIfExists) {
     yield tr.put([this.name, '$ObjectDatabase'], record, {
-      errorIfExists: errorIfExists,
+      errorIfExists,
       createIfMissing: !errorIfExists
     });
   };
 
-  this.createObjectDatabaseIfDoesNotExist = function *(tr) {
-    var hasBeenCreated = false;
-    yield this.getStore().transaction(function *(tr) {
-      var record = yield this.loadObjectDatabaseRecord(tr, false);
+  this.createObjectDatabaseIfDoesNotExist = function *() {
+    let hasBeenCreated = false;
+    yield this.store.transaction(function *(tr) {
+      let record = yield this.loadObjectDatabaseRecord(tr, false);
       if (!record) {
         record = {
           name: this.name,
@@ -120,15 +121,15 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
         yield this.saveObjectDatabaseRecord(record, tr, true);
         hasBeenCreated = true;
         yield this.emitAsync('didCreate');
-        log.info("Object database '" + this.name + "' created");
+        this.log.info(`Object database '${this.name}' created`);
       }
     }.bind(this));
     return hasBeenCreated;
   };
 
   this.upgradeObjectDatabase = function *() {
-    var record = yield this.loadObjectDatabaseRecord();
-    var version = record.version;
+    let record = yield this.loadObjectDatabaseRecord();
+    let version = record.version;
 
     if (version === VERSION) return;
 
@@ -144,7 +145,7 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
 
     record.version = VERSION;
     yield this.saveObjectDatabaseRecord(record);
-    log.info("Object database '" + this.name + "' upgraded to version " + VERSION);
+    this.log.info(`Object database '${this.name}' upgraded to version ${VERSION}`);
 
     this.emit('upgradeDidStop');
   };
@@ -153,14 +154,14 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     if (this.isInsideTransaction()) return yield fn(this);
     yield this.initializeObjectDatabase();
     return yield this.database.transaction(function *(tr) {
-      var transaction = Object.create(this);
+      let transaction = Object.create(this);
       transaction.database = tr;
       return yield fn(transaction);
     }.bind(this), options);
   };
 
   this.isInsideTransaction = function() {
-    return this !== this.self;
+    return this !== this.objectDatabase;
   };
 
   this.destroyObjectDatabase = function *() {
@@ -182,14 +183,14 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   this.getItem = function *(klass, key, options) {
     this.checkClass(klass);
     yield this.initializeObjectDatabase();
-    var item = yield this.database.getItem(TABLE_NAME, key, options);
-    if (!item) return; // means item is not found and errorIfMissing is false
-    var classes = item._classes;
+    let item = yield this.database.getItem(TABLE_NAME, key, options);
+    if (!item) return undefined; // means item is not found and errorIfMissing is false
+    let classes = item._classes;
     if (classes.indexOf(klass) === -1) {
       throw new Error('found an item with the specified key but not belonging to the specified class');
     }
-    var value = _.omit(item, '_classes');
-    return { classes: classes, value: value };
+    let value = _.omit(item, '_classes');
+    return { classes, value };
   };
 
   // Options:
@@ -210,9 +211,9 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //   errorIfMissing: throw an error if the item is not found. Default: true.
   this.deleteItem = function *(klass, key, options) {
     this.checkClass(klass);
-    var hasBeenDeleted = false;
+    let hasBeenDeleted = false;
     yield this.transaction(function *(tr) {
-      var item = yield tr.database.getItem(TABLE_NAME, key, options);
+      let item = yield tr.database.getItem(TABLE_NAME, key, options);
       if (!item) return; // means item not found and errorIfMissing false
       if (item._classes.indexOf(klass) === -1) {
         throw new Error('found an item with the specified key but not belonging to the specified class');
@@ -228,15 +229,15 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   this.getItems = function *(klass, keys, options) {
     this.checkClass(klass);
     yield this.initializeObjectDatabase();
-    var items = yield this.database.getItems(TABLE_NAME, keys, options);
-    items = items.map(function(item) {
-      var classes = item.value._classes;
+    let items = yield this.database.getItems(TABLE_NAME, keys, options);
+    items = items.map(item => {
+      let classes = item.value._classes;
       if (classes.indexOf(klass) === -1) {
         throw new Error('found an item with the specified key but not belonging to the specified class');
       }
-      var key = item.key;
-      var value = _.omit(item.value, '_classes');
-      return { classes: classes, key: key, value: value };
+      let key = item.key;
+      let value = _.omit(item.value, '_classes');
+      return { classes, key, value };
     });
     return items;
   };
@@ -255,12 +256,12 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   this.findItems = function *(klass, options) {
     options = this.injectClassInQueryOption(klass, options);
     yield this.initializeObjectDatabase();
-    var items = yield this.database.findItems(TABLE_NAME, options);
-    items = items.map(function(item) {
-      var classes = item.value._classes;
-      var key = item.key;
-      var value = _.omit(item.value, '_classes');
-      return { classes: classes, key: key, value: value };
+    let items = yield this.database.findItems(TABLE_NAME, options);
+    items = items.map(item => {
+      let classes = item.value._classes;
+      let key = item.key;
+      let value = _.omit(item.value, '_classes');
+      return { classes, key, value };
     });
     return items;
   };
@@ -281,9 +282,9 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     options = this.injectClassInQueryOption(klass, options);
     yield this.initializeObjectDatabase();
     yield this.database.forEachItems(TABLE_NAME, options, function *(value, key) {
-      var classes = value._classes;
-      var value = _.omit(value, '_classes');
-      yield fn.call(thisArg, { classes: classes, key: key, value: value });
+      let classes = value._classes;
+      value = _.omit(value, '_classes');
+      yield fn.call(thisArg, { classes, key, value });
     });
   };
 
@@ -301,9 +302,8 @@ var KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     if (!klass) throw new Error('class parameter is missing or empty');
   };
 
-  this.injectClassInQueryOption = function(klass, options) {
+  this.injectClassInQueryOption = function(klass, options = {}) {
     this.checkClass(klass);
-    if (!options) options = {};
     if (!options.query) options.query = {};
     options.query[this.makeIndexName(klass)] = true;
     return options;
