@@ -73,7 +73,7 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   this.initializeObjectDatabase = function *() {
     if (this.hasBeenInitialized) return;
     if (this.isInitializing) return;
-    if (this.isInsideTransaction()) {
+    if (this.isInsideTransaction) {
       throw new Error('cannot initialize the object database inside a transaction');
     }
     this.isInitializing = true;
@@ -151,7 +151,7 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   };
 
   this.transaction = function *(fn, options) {
-    if (this.isInsideTransaction()) return yield fn(this);
+    if (this.isInsideTransaction) return yield fn(this);
     yield this.initializeObjectDatabase();
     return yield this.database.transaction(function *(tr) {
       let transaction = Object.create(this);
@@ -160,9 +160,11 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     }.bind(this), options);
   };
 
-  this.isInsideTransaction = function() {
-    return this !== this.objectDatabase;
-  };
+  Object.defineProperty(this, 'isInsideTransaction', {
+    get() {
+      return this !== this.objectDatabase;
+    }
+  });
 
   this.destroyObjectDatabase = function *() {
     yield this.database.destroyDatabase();
