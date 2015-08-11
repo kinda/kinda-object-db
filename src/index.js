@@ -70,7 +70,7 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
 
   // === Database ====
 
-  this.initializeObjectDatabase = function *() {
+  this.initializeObjectDatabase = async function() {
     if (this.hasBeenInitialized) return;
     if (this.isInitializing) return;
     if (this.isInsideTransaction) {
@@ -78,57 +78,57 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     }
     this.isInitializing = true;
     try {
-      yield this.database.initializeDatabase();
-      let hasBeenCreated = yield this.createObjectDatabaseIfDoesNotExist();
+      await this.database.initializeDatabase();
+      let hasBeenCreated = await this.createObjectDatabaseIfDoesNotExist();
       if (hasBeenCreated) {
         // in case of upgrade from KindaDB to KindaObjectDB:
-        yield this.database.removeTablesMarkedAsRemoved();
+        await this.database.removeTablesMarkedAsRemoved();
       } else {
-        yield this.database.lockDatabase();
+        await this.database.lockDatabase();
         try {
-          yield this.upgradeObjectDatabase();
+          await this.upgradeObjectDatabase();
         } finally {
-          yield this.database.unlockDatabase();
+          await this.database.unlockDatabase();
         }
       }
       this.hasBeenInitialized = true;
-      yield this.emitAsync('didInitialize');
+      await this.emit('didInitialize');
     } finally {
       this.isInitializing = false;
     }
   };
 
-  this.loadObjectDatabaseRecord = function *(tr = this.store, errorIfMissing = true) {
-    return yield tr.get([this.name, '$ObjectDatabase'], { errorIfMissing });
+  this.loadObjectDatabaseRecord = async function(tr = this.store, errorIfMissing = true) {
+    return await tr.get([this.name, '$ObjectDatabase'], { errorIfMissing });
   };
 
-  this.saveObjectDatabaseRecord = function *(record, tr = this.store, errorIfExists) {
-    yield tr.put([this.name, '$ObjectDatabase'], record, {
+  this.saveObjectDatabaseRecord = async function(record, tr = this.store, errorIfExists) {
+    await tr.put([this.name, '$ObjectDatabase'], record, {
       errorIfExists,
       createIfMissing: !errorIfExists
     });
   };
 
-  this.createObjectDatabaseIfDoesNotExist = function *() {
+  this.createObjectDatabaseIfDoesNotExist = async function() {
     let hasBeenCreated = false;
-    yield this.store.transaction(function *(tr) {
-      let record = yield this.loadObjectDatabaseRecord(tr, false);
+    await this.store.transaction(async function(tr) {
+      let record = await this.loadObjectDatabaseRecord(tr, false);
       if (!record) {
         record = {
           name: this.name,
           version: VERSION
         };
-        yield this.saveObjectDatabaseRecord(record, tr, true);
+        await this.saveObjectDatabaseRecord(record, tr, true);
         hasBeenCreated = true;
-        yield this.emitAsync('didCreate');
+        await this.emit('didCreate');
         this.log.info(`Object database '${this.name}' created`);
       }
     }.bind(this));
     return hasBeenCreated;
   };
 
-  this.upgradeObjectDatabase = function *() {
-    let record = yield this.loadObjectDatabaseRecord();
+  this.upgradeObjectDatabase = async function() {
+    let record = await this.loadObjectDatabaseRecord();
     let version = record.version;
 
     if (version === VERSION) return;
@@ -144,19 +144,19 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     }
 
     record.version = VERSION;
-    yield this.saveObjectDatabaseRecord(record);
+    await this.saveObjectDatabaseRecord(record);
     this.log.info(`Object database '${this.name}' upgraded to version ${VERSION}`);
 
     this.emit('upgradeDidStop');
   };
 
-  this.transaction = function *(fn, options) {
-    if (this.isInsideTransaction) return yield fn(this);
-    yield this.initializeObjectDatabase();
-    return yield this.database.transaction(function *(tr) {
+  this.transaction = async function(fn, options) {
+    if (this.isInsideTransaction) return await fn(this);
+    await this.initializeObjectDatabase();
+    return await this.database.transaction(async function(tr) {
       let transaction = Object.create(this);
       transaction.database = tr;
-      return yield fn(transaction);
+      return await fn(transaction);
     }.bind(this), options);
   };
 
@@ -166,13 +166,13 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
     }
   });
 
-  this.destroyObjectDatabase = function *() {
-    yield this.database.destroyDatabase();
+  this.destroyObjectDatabase = async function() {
+    await this.database.destroyDatabase();
     this.hasBeenInitialized = false;
   };
 
-  this.closeObjectDatabase = function *() {
-    yield this.database.close();
+  this.closeObjectDatabase = async function() {
+    await this.database.close();
   };
 
   // === Basic operations ====
@@ -182,10 +182,10 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //   properties: indicates properties to fetch. '*' for all properties or
   //     an array of property name. If an index projection matches
   //     the requested properties, the projection is used. Default: '*'.
-  this.getItem = function *(klass, key, options) {
+  this.getItem = async function(klass, key, options) {
     this.checkClass(klass);
-    yield this.initializeObjectDatabase();
-    let item = yield this.database.getItem(TABLE_NAME, key, options);
+    await this.initializeObjectDatabase();
+    let item = await this.database.getItem(TABLE_NAME, key, options);
     if (!item) return undefined; // means item is not found and errorIfMissing is false
     let classes = item._classes;
     if (classes.indexOf(klass) === -1) {
@@ -200,27 +200,27 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //     If the item is already present, replace it. Default: true.
   //   errorIfExists: throw an error if the item is already present.
   //     Default: false.
-  this.putItem = function *(classes, key, item, options) {
+  this.putItem = async function(classes, key, item, options) {
     if (!_.isArray(classes)) throw new Error('classes parameter is invalid');
     if (!classes.length) throw new Error('classes parameter is empty');
     item = _.clone(item);
     item._classes = classes;
-    yield this.initializeObjectDatabase();
-    yield this.database.putItem(TABLE_NAME, key, item, options);
+    await this.initializeObjectDatabase();
+    await this.database.putItem(TABLE_NAME, key, item, options);
   };
 
   // Options:
   //   errorIfMissing: throw an error if the item is not found. Default: true.
-  this.deleteItem = function *(klass, key, options) {
+  this.deleteItem = async function(klass, key, options) {
     this.checkClass(klass);
     let hasBeenDeleted = false;
-    yield this.transaction(function *(tr) {
-      let item = yield tr.database.getItem(TABLE_NAME, key, options);
+    await this.transaction(async function(tr) {
+      let item = await tr.database.getItem(TABLE_NAME, key, options);
       if (!item) return; // means item not found and errorIfMissing false
       if (item._classes.indexOf(klass) === -1) {
         throw new Error('found an item with the specified key but not belonging to the specified class');
       }
-      hasBeenDeleted = yield tr.database.deleteItem(TABLE_NAME, key);
+      hasBeenDeleted = await tr.database.deleteItem(TABLE_NAME, key);
     });
     return hasBeenDeleted;
   };
@@ -228,10 +228,10 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   // Options:
   //   properties: indicates properties to fetch. '*' for all properties or
   //     an array of property name. Default: '*'. TODO
-  this.getItems = function *(klass, keys, options) {
+  this.getItems = async function(klass, keys, options) {
     this.checkClass(klass);
-    yield this.initializeObjectDatabase();
-    let items = yield this.database.getItems(TABLE_NAME, keys, options);
+    await this.initializeObjectDatabase();
+    let items = await this.database.getItems(TABLE_NAME, keys, options);
     items = items.map(item => {
       let classes = item.value._classes;
       if (classes.indexOf(klass) === -1) {
@@ -255,10 +255,10 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //     or an array of property name. If an index projection matches
   //     the requested properties, the projection is used.
   //   limit: maximum number of items to return.
-  this.findItems = function *(klass, options) {
+  this.findItems = async function(klass, options) {
     options = this.injectClassInQueryOption(klass, options);
-    yield this.initializeObjectDatabase();
-    let items = yield this.database.findItems(TABLE_NAME, options);
+    await this.initializeObjectDatabase();
+    let items = await this.database.findItems(TABLE_NAME, options);
     items = items.map(item => {
       let classes = item.value._classes;
       let key = item.key;
@@ -269,10 +269,10 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   };
 
   // Options: same as findItems() without 'reverse' and 'properties' attributes.
-  this.countItems = function *(klass, options) {
+  this.countItems = async function(klass, options) {
     options = this.injectClassInQueryOption(klass, options);
-    yield this.initializeObjectDatabase();
-    return yield this.database.countItems(TABLE_NAME, options);
+    await this.initializeObjectDatabase();
+    return await this.database.countItems(TABLE_NAME, options);
   };
 
   // === Composed operations ===
@@ -280,21 +280,21 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   // Options: same as findItems() plus:
   //   batchSize: use several findItems() operations with batchSize as limit.
   //     Default: 250.
-  this.forEachItems = function *(klass, options, fn, thisArg) {
+  this.forEachItems = async function(klass, options, fn, thisArg) {
     options = this.injectClassInQueryOption(klass, options);
-    yield this.initializeObjectDatabase();
-    yield this.database.forEachItems(TABLE_NAME, options, function *(value, key) {
+    await this.initializeObjectDatabase();
+    await this.database.forEachItems(TABLE_NAME, options, async function(value, key) {
       let classes = value._classes;
       value = _.omit(value, '_classes');
-      yield fn.call(thisArg, { classes, key, value });
+      await fn.call(thisArg, { classes, key, value });
     });
   };
 
   // Options: same as forEachItems() without 'properties' attribute.
-  this.findAndDeleteItems = function *(klass, options) {
+  this.findAndDeleteItems = async function(klass, options) {
     options = this.injectClassInQueryOption(klass, options);
-    yield this.initializeObjectDatabase();
-    return yield this.database.findAndDeleteItems(TABLE_NAME, options);
+    await this.initializeObjectDatabase();
+    return await this.database.findAndDeleteItems(TABLE_NAME, options);
   };
 
   // === Helpers ====
