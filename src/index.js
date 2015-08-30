@@ -3,11 +3,13 @@
 let _ = require('lodash');
 let KindaObject = require('kinda-object');
 let KindaEventManager = require('kinda-event-manager');
+let util = require('kinda-util').create();
 let KindaLog = require('kinda-log');
 let KindaDB = require('kinda-db');
 
 const VERSION = 1;
 const TABLE_NAME = 'Objects';
+const RESPIRATION_RATE = 250;
 
 let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   this.include(KindaEventManager);
@@ -230,18 +232,21 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //     an array of property name. Default: '*'. TODO
   this.getItems = async function(klass, keys, options) {
     this.checkClass(klass);
+    let iterationsCount = 0;
     await this.initializeObjectDatabase();
     let items = await this.database.getItems(TABLE_NAME, keys, options);
-    items = items.map(item => {
+    let finalItems = [];
+    for (let item of items) {
       let classes = item.value._classes;
       if (classes.indexOf(klass) === -1) {
         throw new Error('found an item with the specified key but not belonging to the specified class');
       }
       let key = item.key;
       let value = _.omit(item.value, '_classes');
-      return { classes, key, value };
-    });
-    return items;
+      finalItems.push({ classes, key, value });
+      if (++iterationsCount % RESPIRATION_RATE === 0) await util.timeout(0);
+    }
+    return finalItems;
   };
 
   // Options:
@@ -257,15 +262,18 @@ let KindaObjectDB = KindaObject.extend('KindaObjectDB', function() {
   //   limit: maximum number of items to return.
   this.findItems = async function(klass, options) {
     options = this.injectClassInQueryOption(klass, options);
+    let iterationsCount = 0;
     await this.initializeObjectDatabase();
     let items = await this.database.findItems(TABLE_NAME, options);
-    items = items.map(item => {
+    let finalItems = [];
+    for (let item of items) {
       let classes = item.value._classes;
       let key = item.key;
       let value = _.omit(item.value, '_classes');
-      return { classes, key, value };
-    });
-    return items;
+      finalItems.push({ classes, key, value });
+      if (++iterationsCount % RESPIRATION_RATE === 0) await util.timeout(0);
+    }
+    return finalItems;
   };
 
   // Options: same as findItems() without 'reverse' and 'properties' attributes.
